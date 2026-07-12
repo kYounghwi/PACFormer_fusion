@@ -20,7 +20,6 @@ Across six multi-site datasets, the framework improves the mean squared error by
 
 ## Setup
 
-The implementation was verified with Python 3.10.19, CUDA 12.8, and the package versions listed in `requirements.txt`.
 
 ```bash
 git clone https://github.com/kYounghwi/PACFormer_fusion.git
