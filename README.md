@@ -34,7 +34,7 @@ pip install -r requirements.txt
 
 ## Run
 
-Training, validation, and testing are managed through `main.py`. During training, the model is validated after every epoch. The latest checkpoint and the checkpoint with the best validation MAE are saved as `last.pt` and `best.pt`, respectively. After training, `best.pt` is automatically evaluated on the test split.
+The latest checkpoint and the checkpoint with the best validation MAE are saved as `last.pt` and `best.pt`, respectively. After training, `best.pt` is automatically evaluated on the test split.
 
 ```bash
 python main.py \
@@ -75,11 +75,8 @@ python main.py \
   --checkpoint results/PACFormer/best.pt
 ```
 
-Model and forecasting hyperparameters are restored from the checkpoint. Runtime data paths, batch size, and worker settings are taken from the test command.
 
 ## AUSGRID Sample
-
-The repository includes a small executable sample under `data/AUSGRID_SAMPLE`. It contains 1,000 contiguous hourly PV observations from 299 sites, their coordinates, and the corresponding ERA5-based NWP fields.
 
 Run the complete train-validation-test workflow with:
 
@@ -104,15 +101,8 @@ The script uses the experimental 96-step configuration:
 
 NWP normalization statistics are generated from the training split on the first run and subsequently reused.
 
-## Evaluation
-
 Metrics are calculated in normalized PV space after excluding positions whose inverse-normalized target is at or below `1e-3`. MAE, MSE, and RMSE are first calculated independently for each site and then averaged equally across sites with at least one valid target.
 
-Test outputs are saved in the checkpoint directory:
-
-- `test_metrics.json`: aggregate site-averaged metrics
-- `test_site_metrics.json` and `test_site_metrics.npz`: per-site metrics
-- `test_prediction.npy` and `test_target.npy`: inverse-transformed predictions and targets
 
 ## Repository Layout
 
