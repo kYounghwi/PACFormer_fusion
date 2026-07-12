@@ -99,7 +99,7 @@ The script uses the experimental 96-step configuration:
 | Representative groups | 25 |
 | Patch length / stride | 16 / 8 |
 | NWP cube patch | `(4, 1, 1)` |
-| NWP ViT layers | 2 |
+| NWP branch layers | 2 |
 | Event query mode | `event` |
 
 NWP normalization statistics are generated from the training split on the first run and subsequently reused.
