@@ -13,7 +13,7 @@ Medium-range photovoltaic (PV) forecasting across geographically distributed sit
 
 PACFormer addresses this problem through two components:
 
-- **PV context encoder:** a dual-branch Transformer that combines globally shared inter-site variability with dynamic group-level lead-lag propagation context.
+- **PV context encoder:** a dual-branch Transformer specialized to capture shared variability and lead–lag propagation across dynamic site groups by incorporating the intrinsic characteristics of PV generation signals.
 - **Asymmetric PV-NWP fusion:** an NWP-based future prior is preserved as the base representation, while the PACFormer-derived PV context provides condition-dependent refinement.
 
 Across six multi-site datasets, the framework improves the mean squared error by 14.27% relative to the average of the three strongest competing baselines. Additional experiments evaluate robustness under high-variability conditions, imperfect NWP corruption, and limited training data.
