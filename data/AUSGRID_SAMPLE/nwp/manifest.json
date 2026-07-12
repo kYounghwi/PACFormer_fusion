@@ -1,0 +1,30 @@
+{
+  "dataset": "AUSGRID_SAMPLE_1000",
+  "source_npz_dir": "C:\\Users\\USER\\Documents\\Codex\\pv_nwp_benchmarks_v2\\era5\\AUSGRID_rooftop_hourly\\npz_025deg_pvtime",
+  "data_file": "data.float16.memmap",
+  "dtype": "float16",
+  "shape": [
+    1000,
+    14,
+    13,
+    6
+  ],
+  "axis_order": "time,lat,lon,variable",
+  "model_return_axis_order": "lon,lat,time,variable",
+  "variables": [
+    "aswdir_s",
+    "aswdifd_s",
+    "clct",
+    "t_2m",
+    "u_10m",
+    "v_10m"
+  ],
+  "pv_time_file": "pv_time.npy",
+  "era5_utc_time_file": "era5_utc_time.npy",
+  "lat_file": "lat.npy",
+  "lon_file": "lon.npy",
+  "note": "ERA5 radiation variables are interval-mean W/m2 converted from hourly accumulations before this memmap step.",
+  "source_dataset": "AUSGRID",
+  "source_slice": "[0:1000]",
+  "sample_note": "First 1000 contiguous PV rows and exactly matching NWP time rows. NWP train stats are intentionally generated from this sample on first run."
+}
