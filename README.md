@@ -4,9 +4,7 @@ Official PyTorch implementation of the PACFormer-based PV-NWP information fusion
 
 <p align="center">
   <br>
-  <strong>Framework overview figure</strong><br>
-  <em>The model overview will be added upon publication.</em>
-  <br><br>
+<img width="1757" height="1378" alt="Image" src="https://github.com/user-attachments/assets/41376d61-234f-43d0-9482-596bc53065ca" />
 </p>
 
 ## Overview
