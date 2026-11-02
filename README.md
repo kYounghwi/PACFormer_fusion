@@ -37,28 +37,28 @@ pip install -r requirements.txt
 On Windows, select one fusion mode and run the corresponding batch command from the repository root:
 
 ```bat
-run_ausgrid_full.bat decay
+run_ausgrid_full.bat decay adam cuda:0
 ```
 
 or
 
 ```bat
-run_ausgrid_full.bat swiglu
+run_ausgrid_full.bat swiglu adam cuda:0
 ```
 
 Adam remains the default optimizer. Muon is enabled only when it is explicitly requested:
 
 ```bat
-run_ausgrid_full.bat swiglu muon
+run_ausgrid_full.bat swiglu muon cuda:0
 ```
 
 The NWP-only Pangu baseline is run with:
 
 ```bat
-run_pangu_ausgrid_full.bat
+run_pangu_ausgrid_full.bat adam cuda:0
 ```
 
-The batch files execute the complete train-validation-test workflow for the 48-, 96-, 168-, and 240-hour horizons. The latest checkpoint and the checkpoint with the best validation nMAE are saved as `last.pt` and `best.pt`, respectively, and `best.pt` is automatically evaluated on the test split after training. In Muon mode, eligible two-dimensional hidden-layer matrices use Muon, while biases, normalization parameters, embeddings, and output heads use AdamW.
+The final argument selects the execution device (`auto`, `cpu`, `cuda:0`, `cuda:1`, etc.); omitting it uses `auto`, which selects `cuda:0` when CUDA is available and otherwise uses the CPU. The batch files execute the complete train-validation-test workflow for the 48-, 96-, 168-, and 240-hour horizons. The latest checkpoint and the checkpoint with the best validation nMAE are saved as `last.pt` and `best.pt`, respectively, and `best.pt` is automatically evaluated on the test split after training. In Muon mode, eligible two-dimensional hidden-layer matrices use Muon, while biases, normalization parameters, embeddings, and output heads use AdamW.
 
 
 ## Repository Layout

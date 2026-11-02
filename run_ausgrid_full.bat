@@ -4,7 +4,7 @@ setlocal EnableDelayedExpansion
 set "FUSION_MODE=%~1"
 if /I "%FUSION_MODE%"=="decay" goto run
 if /I "%FUSION_MODE%"=="swiglu" goto run
-echo Usage: run_ausgrid_full.bat ^{decay^|swiglu^} [adam^|muon]
+echo Usage: run_ausgrid_full.bat ^{decay^|swiglu^} [adam^|muon] [auto^|cpu^|cuda:N]
 exit /b 2
 
 :run
@@ -16,13 +16,15 @@ if /I not "%OPTIMIZER%"=="adam" if /I not "%OPTIMIZER%"=="muon" (
 )
 set "OPTIMIZER_SUFFIX="
 if /I "%OPTIMIZER%"=="muon" set "OPTIMIZER_SUFFIX=_MUON"
+set "DEVICE=%~3"
+if "%DEVICE%"=="" set "DEVICE=auto"
 cd /d "%~dp0"
 for %%H in (48 96 168 240) do (
   if %%H==48 set "CUBE_T=6"
   if %%H==96 set "CUBE_T=12"
   if %%H==168 set "CUBE_T=15"
   if %%H==240 set "CUBE_T=15"
-  echo [AUSGRID FULL] horizon=%%H fusion=%FUSION_MODE% optimizer=%OPTIMIZER%
+  echo [AUSGRID FULL] horizon=%%H fusion=%FUSION_MODE% optimizer=%OPTIMIZER% device=%DEVICE%
   python main.py ^
     --mode train ^
     --root_path data/AUSGRID ^
@@ -59,6 +61,7 @@ for %%H in (48 96 168 240) do (
     --q_event_mode event ^
     --fusion_mode %FUSION_MODE% ^
     --optimizer %OPTIMIZER% ^
+    --device %DEVICE% ^
     --output_attention ^
     --loss mse ^
     --weight_decay 0 ^

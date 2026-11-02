@@ -6,8 +6,18 @@ cd "$PROJECT_DIR"
 
 FUSION_MODE="${1:-}"
 if [[ "$FUSION_MODE" != "decay" && "$FUSION_MODE" != "swiglu" ]]; then
-  echo "Usage: bash run_ausgrid_full.sh {decay|swiglu}"
+  echo "Usage: bash run_ausgrid_full.sh {decay|swiglu} [adam|muon] [auto|cpu|cuda:N]"
   exit 2
+fi
+OPTIMIZER="${2:-adam}"
+if [[ "$OPTIMIZER" != "adam" && "$OPTIMIZER" != "muon" ]]; then
+  echo "Optimizer must be adam or muon."
+  exit 2
+fi
+DEVICE="${3:-auto}"
+OPTIMIZER_SUFFIX=""
+if [[ "$OPTIMIZER" == "muon" ]]; then
+  OPTIMIZER_SUFFIX="_MUON"
 fi
 
 # Override when only selected horizons are needed, for example:
@@ -56,6 +66,8 @@ for HORIZON in "${HORIZON_LIST[@]}"; do
     --nwp_vit_layers 2 \
     --q_event_mode event \
     --fusion_mode "$FUSION_MODE" \
+    --optimizer "$OPTIMIZER" \
+    --device "$DEVICE" \
     --output_attention \
     --loss mse \
     --weight_decay 0 \
@@ -63,5 +75,5 @@ for HORIZON in "${HORIZON_LIST[@]}"; do
     --metric_threshold 1e-3 \
     --seed 42 \
     --checkpoints results \
-    --run_name "AUSGRID_FULL_H${HORIZON}_HISTNWP_STRICT_${FUSION_MODE}"
+    --run_name "AUSGRID_FULL_H${HORIZON}_HISTNWP_STRICT_${FUSION_MODE}${OPTIMIZER_SUFFIX}"
 done

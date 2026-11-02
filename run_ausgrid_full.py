@@ -18,6 +18,9 @@ def main():
         "--optimizer", choices=("adam", "muon"), default="adam"
     )
     parser.add_argument(
+        "--device", default="auto", help="auto, cpu, cuda:0, cuda:1, ..."
+    )
+    parser.add_argument(
         "--horizons", type=int, nargs="+", default=(48, 96, 168, 240)
     )
     args = parser.parse_args()
@@ -35,7 +38,7 @@ def main():
         print(
             f"[AUSGRID FULL {index}/{len(args.horizons)}] "
             f"model={args.model} horizon={horizon} fusion={fusion_mode} "
-            f"optimizer={args.optimizer}",
+            f"optimizer={args.optimizer} device={args.device}",
             flush=True,
         )
         optimizer_suffix = "_MUON" if args.optimizer == "muon" else ""
@@ -85,6 +88,7 @@ def main():
             "--q_event_mode", "event",
             "--fusion_mode", fusion_mode,
             "--optimizer", args.optimizer,
+            "--device", args.device,
             "--output_attention",
             "--loss", "mse",
             "--weight_decay", "0",

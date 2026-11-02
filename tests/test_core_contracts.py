@@ -2,6 +2,7 @@ import json
 import gc
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,6 +12,7 @@ import torch
 from torch import nn
 
 from PACFormer.exp import _OptimizerBundle, _build_optimizer
+from main import _resolve_device
 from PACFormer.modules.PACFormer import Model
 from PACFormer.modules.tst_backbone import _MultiheadAttention
 from src.data_factory import _split_sample_starts
@@ -212,6 +214,19 @@ class OptimizerContractTests(unittest.TestCase):
         self.assertIn(id(model.hidden.bias), adamw_ids)
         self.assertIn(id(model.enc_embedding.weight), adamw_ids)
         self.assertIn(id(model.output_projection.weight), adamw_ids)
+
+
+class DeviceContractTests(unittest.TestCase):
+    def test_explicit_cpu_device(self):
+        self.assertEqual(str(_resolve_device("cpu")), "cpu")
+
+    def test_cuda_ordinal_is_validated(self):
+        with patch("torch.cuda.is_available", return_value=True), patch(
+            "torch.cuda.device_count", return_value=2
+        ):
+            self.assertEqual(str(_resolve_device("cuda:1")), "cuda:1")
+            with self.assertRaisesRegex(RuntimeError, "out of range"):
+                _resolve_device("cuda:2")
 
 
 if __name__ == "__main__":

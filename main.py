@@ -172,7 +172,30 @@ def get_args():
     parser.add_argument("--run_name", default="PACFormer")
     parser.add_argument("--checkpoint", default="")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--device",
+        default="auto",
+        help="Execution device: auto, cpu, cuda, cuda:0, cuda:1, and so on.",
+    )
     return parser.parse_args()
+
+
+def _resolve_device(requested):
+    requested = str(requested).strip().lower()
+    if requested == "auto":
+        return torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device(requested)
+    if device.type == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError(f"CUDA was requested ({requested}) but is unavailable.")
+        index = 0 if device.index is None else device.index
+        count = torch.cuda.device_count()
+        if index < 0 or index >= count:
+            raise RuntimeError(
+                f"CUDA device {index} is out of range; available device count is {count}."
+            )
+        return torch.device(f"cuda:{index}")
+    return device
 
 
 def prepare_args(args):
@@ -181,7 +204,7 @@ def prepare_args(args):
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
-    args.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    args.device = _resolve_device(args.device)
     args.cube_patch = tuple(args.cube_patch)
     if args.nwp_history_len < 0:
         args.nwp_history_len = min(args.pred_len, 120)
