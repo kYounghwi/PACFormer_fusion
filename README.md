@@ -34,74 +34,19 @@ pip install -r requirements.txt
 
 ## Run
 
-The latest checkpoint and the checkpoint with the best validation MAE are saved as `last.pt` and `best.pt`, respectively. After training, `best.pt` is automatically evaluated on the test split.
+On Windows, select one fusion mode and run the corresponding batch command from the repository root:
 
-```bash
-python main.py \
-  --mode train \
-  --root_path PATH_TO_DATA \
-  --pv_csv pv.csv \
-  --nwp_backend memmap \
-  --nwp_memmap_dir nwp \
-  --stations_csv_path stations.csv \
-  --seq_len 288 \
-  --pred_len 96 \
-  --batch_size 32 \
-  --train_epochs 50 \
-  --learning_rate 1e-4 \
-  --d_model 128 \
-  --d_ff 512 \
-  --n_heads 4 \
-  --num_groups 25 \
-  --patch_len 16 \
-  --stride 8 \
-  --checkpoints results \
-  --run_name PACFormer
+```bat
+run_ausgrid_full.bat decay
 ```
 
-Use `python main.py --help` for the complete list of data, model, optimization, and evaluation options.
+or
 
-To evaluate an existing checkpoint:
-
-```bash
-python main.py \
-  --mode test \
-  --root_path PATH_TO_DATA \
-  --pv_csv pv.csv \
-  --nwp_backend memmap \
-  --nwp_memmap_dir nwp \
-  --stations_csv_path stations.csv \
-  --batch_size 32 \
-  --checkpoint results/PACFormer/best.pt
+```bat
+run_ausgrid_full.bat swiglu
 ```
 
-
-## AUSGRID Sample
-
-Run the complete train-validation-test workflow with:
-
-```bash
-bash run_sample.sh
-```
-
-The script uses the experimental 96-step configuration:
-
-| Parameter | Value |
-|---|---:|
-| Input / prediction length | 288 / 96 |
-| Batch size / epochs | 32 / 50 |
-| Initial learning rate | `1e-4` |
-| Model / FFN dimension | 128 / 512 |
-| Attention heads | 4 |
-| Representative groups | 25 |
-| Patch length / stride | 16 / 8 |
-| NWP cube patch | `(4, 1, 1)` |
-| NWP branch layers | 2 |
-| Event query mode | `event` |
-
-NWP normalization statistics are generated from the training split on the first run and subsequently reused.
-
-Metrics are calculated in normalized PV space after excluding positions whose inverse-normalized target is at or below `1e-3`. MAE, MSE, and RMSE are first calculated independently for each site and then averaged equally across sites with at least one valid target.
+The batch file executes the complete train-validation-test workflow for the 48-, 96-, 168-, and 240-hour horizons. The latest checkpoint and the checkpoint with the best validation loss are saved as `last.pt` and `best.pt`, respectively, and `best.pt` is automatically evaluated on the test split after training.
 
 
 ## Repository Layout
@@ -124,9 +69,9 @@ PACFormer_fusion/
 |   |-- metrics.py                # Site-averaged evaluation metrics
 |   |-- timefeatures.py           # Temporal covariates
 |   `-- tools.py                  # Learning-rate scheduling utilities
-|-- data/AUSGRID_SAMPLE/          # Executable PV-NWP sample
+|-- data/AUSGRID/                 # Full AUSGRID PV and ERA5 inputs
 |-- main.py                       # Command-line entry point
-|-- run_sample.sh                 # AUSGRID sample experiment
+|-- run_ausgrid_full.bat          # Full Windows train-validation-test workflow
 `-- requirements.txt
 ```
 
