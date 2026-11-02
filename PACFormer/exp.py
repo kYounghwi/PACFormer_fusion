@@ -11,6 +11,128 @@ from src.metrics import CapacityMetricAccumulator
 from src.tools import adjust_learning_rate
 
 
+class _OptimizerBundle:
+    """Expose multiple optimizers through the interface used by training."""
+
+    def __init__(self, optimizers):
+        self.optimizers = list(optimizers)
+        self.param_groups = [
+            group for optimizer in self.optimizers for group in optimizer.param_groups
+        ]
+
+    def zero_grad(self, set_to_none=True):
+        for optimizer in self.optimizers:
+            optimizer.zero_grad(set_to_none=set_to_none)
+
+    def step(self):
+        for optimizer in self.optimizers:
+            optimizer.step()
+
+    def state_dict(self):
+        return {
+            "optimizer_types": [
+                optimizer.__class__.__name__ for optimizer in self.optimizers
+            ],
+            "optimizer_states": [
+                optimizer.state_dict() for optimizer in self.optimizers
+            ],
+        }
+
+
+_MUON_EXCLUDED_NAMES = (
+    "enc_embedding",
+    "value_embedding",
+    "patch_embed",
+    "w_pos",
+    ".head.",
+    "out_nwp",
+    "out_pv_corr",
+    "out_fused",
+    "output_projection",
+    "nwp_branch.et2e",
+    "nwp_branch.token_to_sensor",
+)
+
+
+def _use_muon(name, parameter):
+    """Select only 2D hidden-layer matrices, as required by torch.optim.Muon."""
+
+    lowered = name.lower()
+    return parameter.ndim == 2 and not any(
+        excluded in lowered for excluded in _MUON_EXCLUDED_NAMES
+    )
+
+
+def _parameter_groups(named_parameters, predicate=None):
+    grouped = {"pv": [], "vit": []}
+    for name, parameter in named_parameters:
+        if not parameter.requires_grad:
+            continue
+        if predicate is not None and not predicate(name, parameter):
+            continue
+        role = "vit" if name.startswith("nwp_branch.") else "pv"
+        grouped[role].append(parameter)
+    return [
+        {"params": parameters, "group_name": role}
+        for role, parameters in grouped.items()
+        if parameters
+    ]
+
+
+def _build_optimizer(args, model):
+    named_parameters = list(model.named_parameters())
+    if args.optimizer == "adam":
+        groups = _parameter_groups(named_parameters)
+        for group in groups:
+            group["lr"] = args.learning_rate
+        return torch.optim.Adam(groups, weight_decay=args.weight_decay)
+
+    if not hasattr(torch.optim, "Muon"):
+        raise RuntimeError(
+            "--optimizer muon requires a PyTorch build that provides torch.optim.Muon "
+            "(the pinned torch==2.9.0 build does)."
+        )
+
+    muon_groups = _parameter_groups(named_parameters, _use_muon)
+    adamw_groups = _parameter_groups(
+        named_parameters, lambda name, parameter: not _use_muon(name, parameter)
+    )
+    if not muon_groups:
+        raise ValueError("No eligible 2D hidden-layer parameters were found for Muon.")
+    for group in [*muon_groups, *adamw_groups]:
+        group["lr"] = args.learning_rate
+
+    muon = torch.optim.Muon(
+        muon_groups,
+        lr=args.learning_rate,
+        weight_decay=args.weight_decay,
+        momentum=args.muon_momentum,
+        ns_steps=args.muon_ns_steps,
+        adjust_lr_fn=args.muon_adjust_lr,
+    )
+    optimizers = [muon]
+    if adamw_groups:
+        optimizers.append(
+            torch.optim.AdamW(
+                adamw_groups,
+                lr=args.learning_rate,
+                weight_decay=args.weight_decay,
+            )
+        )
+
+    muon_count = sum(
+        parameter.numel() for group in muon_groups for parameter in group["params"]
+    )
+    adamw_count = sum(
+        parameter.numel() for group in adamw_groups for parameter in group["params"]
+    )
+    print(
+        "Optimizer: Muon+AdamW "
+        f"| Muon parameters={muon_count:,} | AdamW parameters={adamw_count:,}"
+    )
+    return _OptimizerBundle(optimizers)
+
+
 def build_model(args):
     model_class = PanguBaseline if args.model == "pangu" else Model
     return model_class(args).float().to(args.device)
@@ -74,24 +196,7 @@ def train(args, model, data):
     run_dir = Path(args.checkpoints) / args.run_name
     run_dir.mkdir(parents=True, exist_ok=True)
     criterion = _criterion(args.loss)
-    pv_parameters, nwp_parameters = [], []
-    for name, parameter in model.named_parameters():
-        if not parameter.requires_grad:
-            continue
-        if name.startswith("nwp_branch."):
-            nwp_parameters.append(parameter)
-        else:
-            pv_parameters.append(parameter)
-    parameter_groups = []
-    if pv_parameters:
-        parameter_groups.append(
-            {"params": pv_parameters, "lr": args.learning_rate, "group_name": "pv"}
-        )
-    if nwp_parameters:
-        parameter_groups.append(
-            {"params": nwp_parameters, "lr": args.learning_rate, "group_name": "vit"}
-        )
-    optimizer = torch.optim.Adam(parameter_groups, weight_decay=args.weight_decay)
+    optimizer = _build_optimizer(args, model)
 
     best_nmae = float("inf")
     stale_epochs = 0

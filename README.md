@@ -46,7 +46,19 @@ or
 run_ausgrid_full.bat swiglu
 ```
 
-The batch file executes the complete train-validation-test workflow for the 48-, 96-, 168-, and 240-hour horizons. The latest checkpoint and the checkpoint with the best validation loss are saved as `last.pt` and `best.pt`, respectively, and `best.pt` is automatically evaluated on the test split after training.
+Adam remains the default optimizer. Muon is enabled only when it is explicitly requested:
+
+```bat
+run_ausgrid_full.bat swiglu muon
+```
+
+The NWP-only Pangu baseline is run with:
+
+```bat
+run_pangu_ausgrid_full.bat
+```
+
+The batch files execute the complete train-validation-test workflow for the 48-, 96-, 168-, and 240-hour horizons. The latest checkpoint and the checkpoint with the best validation nMAE are saved as `last.pt` and `best.pt`, respectively, and `best.pt` is automatically evaluated on the test split after training. In Muon mode, eligible two-dimensional hidden-layer matrices use Muon, while biases, normalization parameters, embeddings, and output heads use AdamW.
 
 
 ## Repository Layout
@@ -72,6 +84,7 @@ PACFormer_fusion/
 |-- data/AUSGRID/                 # Full AUSGRID PV and ERA5 inputs
 |-- main.py                       # Command-line entry point
 |-- run_ausgrid_full.bat          # Full Windows train-validation-test workflow
+|-- run_pangu_ausgrid_full.bat    # Full Pangu baseline workflow
 `-- requirements.txt
 ```
 

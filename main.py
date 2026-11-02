@@ -131,6 +131,34 @@ def get_args():
     parser.add_argument("--train_epochs", type=int, default=20)
     parser.add_argument("--learning_rate", type=float, default=1e-4)
     parser.add_argument(
+        "--optimizer",
+        default="adam",
+        choices=["adam", "muon"],
+        help=(
+            "Optimizer policy. 'adam' preserves the original optimizer. "
+            "'muon' explicitly enables Muon for eligible 2D hidden weights "
+            "and AdamW for biases, normalization, embeddings, and output heads."
+        ),
+    )
+    parser.add_argument(
+        "--muon_momentum",
+        type=float,
+        default=0.95,
+        help="Muon momentum; used only with --optimizer muon.",
+    )
+    parser.add_argument(
+        "--muon_ns_steps",
+        type=int,
+        default=5,
+        help="Newton-Schulz iterations; used only with --optimizer muon.",
+    )
+    parser.add_argument(
+        "--muon_adjust_lr",
+        default="match_rms_adamw",
+        choices=["original", "match_rms_adamw"],
+        help="Muon matrix-shape LR adjustment; used only with --optimizer muon.",
+    )
+    parser.add_argument(
         "--lradj", default="dual", choices=["type1", "type2", "type3", "cosine", "dual"]
     )
     parser.add_argument("--total_epochs", type=int, default=0)
@@ -167,6 +195,10 @@ def prepare_args(args):
         raise ValueError("sites_per_group must be non-negative.")
     if not 0.0 <= args.diversity_weight <= 1.0:
         raise ValueError("diversity_weight must be in [0, 1].")
+    if args.muon_momentum < 0.0:
+        raise ValueError("muon_momentum must be non-negative.")
+    if args.muon_ns_steps < 1:
+        raise ValueError("muon_ns_steps must be at least one.")
     if args.fusion_d_ff <= 0:
         args.fusion_d_ff = args.d_ff
     if args.nwp_backend == "memmap" and not args.nwp_memmap_dir:

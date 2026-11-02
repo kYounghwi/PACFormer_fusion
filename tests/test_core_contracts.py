@@ -8,7 +8,9 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import torch
+from torch import nn
 
+from PACFormer.exp import _OptimizerBundle, _build_optimizer
 from PACFormer.modules.PACFormer import Model
 from PACFormer.modules.tst_backbone import _MultiheadAttention
 from src.data_factory import _split_sample_starts
@@ -144,6 +146,72 @@ class ModelContractTests(unittest.TestCase):
             torch.testing.assert_close(weights.sum(-1), torch.ones_like(weights.sum(-1)))
             expected = torch.eye(8).expand(2, -1, -1)
             torch.testing.assert_close(weights, expected)
+
+    @unittest.skipUnless(hasattr(torch.optim, "Muon"), "torch.optim.Muon unavailable")
+    def test_muon_steps_the_small_pacformer_contract(self):
+        with self._temporary_directory() as tmp:
+            station_path = Path(tmp) / "stations.csv"
+            station_path.write_text(
+                "site,lat,lon\na,0,0\nb,0,1\nc,1,0\n", encoding="utf-8"
+            )
+            model = Model(self._config(station_path, "swiglu")).train()
+            args = SimpleNamespace(
+                optimizer="muon", learning_rate=1e-4, weight_decay=0.0,
+                muon_momentum=0.95, muon_ns_steps=5,
+                muon_adjust_lr="match_rms_adamw",
+            )
+            optimizer = _build_optimizer(args, model)
+            output = model(
+                torch.randn(1, 8, 3), torch.randn(1, 8, 4), None, None,
+                torch.randn(1, 6, 12, 6, 2),
+            )
+            loss = output.square().mean()
+            loss.backward()
+            optimizer.step()
+            self.assertTrue(torch.isfinite(loss.detach()))
+
+
+class OptimizerContractTests(unittest.TestCase):
+    @unittest.skipUnless(hasattr(torch.optim, "Muon"), "torch.optim.Muon unavailable")
+    def test_muon_is_opt_in_and_uses_adamw_fallback(self):
+        class TinyModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.hidden = nn.Linear(4, 4)
+                self.enc_embedding = nn.Embedding(8, 4)
+                self.nwp_branch = nn.Sequential(nn.Linear(4, 4), nn.LayerNorm(4))
+                self.output_projection = nn.Linear(4, 2)
+
+        model = TinyModel()
+        args = SimpleNamespace(
+            optimizer="muon", learning_rate=1e-4, weight_decay=0.0,
+            muon_momentum=0.95, muon_ns_steps=5,
+            muon_adjust_lr="match_rms_adamw",
+        )
+        optimizer = _build_optimizer(args, model)
+        self.assertIsInstance(optimizer, _OptimizerBundle)
+        self.assertEqual(
+            [item.__class__.__name__ for item in optimizer.optimizers],
+            ["Muon", "AdamW"],
+        )
+
+        muon_ids = {
+            id(parameter)
+            for group in optimizer.optimizers[0].param_groups
+            for parameter in group["params"]
+        }
+        adamw_ids = {
+            id(parameter)
+            for group in optimizer.optimizers[1].param_groups
+            for parameter in group["params"]
+        }
+        all_ids = {id(parameter) for parameter in model.parameters()}
+        self.assertFalse(muon_ids & adamw_ids)
+        self.assertEqual(muon_ids | adamw_ids, all_ids)
+        self.assertIn(id(model.hidden.weight), muon_ids)
+        self.assertIn(id(model.hidden.bias), adamw_ids)
+        self.assertIn(id(model.enc_embedding.weight), adamw_ids)
+        self.assertIn(id(model.output_projection.weight), adamw_ids)
 
 
 if __name__ == "__main__":

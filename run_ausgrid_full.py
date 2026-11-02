@@ -9,12 +9,21 @@ def main():
         description="Run the full AUSGRID PACFormer grid."
     )
     parser.add_argument(
-        "--fusion-mode", required=True, choices=("decay", "swiglu")
+        "--model", choices=("pacformer", "pangu"), default="pacformer"
+    )
+    parser.add_argument(
+        "--fusion-mode", choices=("decay", "swiglu")
+    )
+    parser.add_argument(
+        "--optimizer", choices=("adam", "muon"), default="adam"
     )
     parser.add_argument(
         "--horizons", type=int, nargs="+", default=(48, 96, 168, 240)
     )
     args = parser.parse_args()
+    if args.model == "pacformer" and args.fusion_mode is None:
+        parser.error("--fusion-mode {decay,swiglu} is required for PACFormer.")
+    fusion_mode = args.fusion_mode or "decay"
 
     project = Path(__file__).resolve().parent
     temporal_cube = {48: 6, 96: 12, 168: 15, 240: 15}
@@ -25,12 +34,22 @@ def main():
             )
         print(
             f"[AUSGRID FULL {index}/{len(args.horizons)}] "
-            f"horizon={horizon} fusion={args.fusion_mode}",
+            f"model={args.model} horizon={horizon} fusion={fusion_mode} "
+            f"optimizer={args.optimizer}",
             flush=True,
         )
+        optimizer_suffix = "_MUON" if args.optimizer == "muon" else ""
+        if args.model == "pangu":
+            run_name = f"PANGU_AUSGRID_FULL_H{horizon}{optimizer_suffix}"
+        else:
+            run_name = (
+                f"AUSGRID_FULL_H{horizon}_HISTNWP_STRICT_"
+                f"{fusion_mode}{optimizer_suffix}"
+            )
         command = [
             sys.executable,
             "main.py",
+            "--model", args.model,
             "--mode", "train",
             "--root_path", "data/AUSGRID",
             "--pv_csv", "pv.csv",
@@ -64,7 +83,8 @@ def main():
             "--cube_patch", str(temporal_cube[horizon]), "1", "1",
             "--nwp_vit_layers", "2",
             "--q_event_mode", "event",
-            "--fusion_mode", args.fusion_mode,
+            "--fusion_mode", fusion_mode,
+            "--optimizer", args.optimizer,
             "--output_attention",
             "--loss", "mse",
             "--weight_decay", "0",
@@ -72,8 +92,7 @@ def main():
             "--metric_threshold", "1e-3",
             "--seed", "42",
             "--checkpoints", "results",
-            "--run_name",
-            f"AUSGRID_FULL_H{horizon}_HISTNWP_STRICT_{args.fusion_mode}",
+            "--run_name", run_name,
         ]
         subprocess.run(command, cwd=project, check=True)
 

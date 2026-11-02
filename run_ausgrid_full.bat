@@ -4,17 +4,25 @@ setlocal EnableDelayedExpansion
 set "FUSION_MODE=%~1"
 if /I "%FUSION_MODE%"=="decay" goto run
 if /I "%FUSION_MODE%"=="swiglu" goto run
-echo Usage: run_ausgrid_full.bat ^{decay^|swiglu^}
+echo Usage: run_ausgrid_full.bat ^{decay^|swiglu^} [adam^|muon]
 exit /b 2
 
 :run
+set "OPTIMIZER=%~2"
+if "%OPTIMIZER%"=="" set "OPTIMIZER=adam"
+if /I not "%OPTIMIZER%"=="adam" if /I not "%OPTIMIZER%"=="muon" (
+  echo Optimizer must be adam or muon.
+  exit /b 2
+)
+set "OPTIMIZER_SUFFIX="
+if /I "%OPTIMIZER%"=="muon" set "OPTIMIZER_SUFFIX=_MUON"
 cd /d "%~dp0"
 for %%H in (48 96 168 240) do (
   if %%H==48 set "CUBE_T=6"
   if %%H==96 set "CUBE_T=12"
   if %%H==168 set "CUBE_T=15"
   if %%H==240 set "CUBE_T=15"
-  echo [AUSGRID FULL] horizon=%%H fusion=%FUSION_MODE%
+  echo [AUSGRID FULL] horizon=%%H fusion=%FUSION_MODE% optimizer=%OPTIMIZER%
   python main.py ^
     --mode train ^
     --root_path data/AUSGRID ^
@@ -50,6 +58,7 @@ for %%H in (48 96 168 240) do (
     --nwp_vit_layers 2 ^
     --q_event_mode event ^
     --fusion_mode %FUSION_MODE% ^
+    --optimizer %OPTIMIZER% ^
     --output_attention ^
     --loss mse ^
     --weight_decay 0 ^
@@ -57,7 +66,7 @@ for %%H in (48 96 168 240) do (
     --metric_threshold 1e-3 ^
     --seed 42 ^
     --checkpoints results ^
-    --run_name AUSGRID_FULL_H%%H_HISTNWP_STRICT_%FUSION_MODE%
+    --run_name AUSGRID_FULL_H%%H_HISTNWP_STRICT_%FUSION_MODE%%OPTIMIZER_SUFFIX%
   if errorlevel 1 exit /b 1
 )
 
