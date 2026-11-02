@@ -1,0 +1,27 @@
+{
+  "dataset": "AUSGRID_rooftop_hourly",
+  "source_npz_dir": "ERA5 AUSGRID preprocessing output (local source path removed)",
+  "data_file": "data.float16.memmap",
+  "dtype": "float16",
+  "shape": [
+    26304,
+    14,
+    13,
+    6
+  ],
+  "axis_order": "time,lat,lon,variable",
+  "model_return_axis_order": "lon,lat,time,variable",
+  "variables": [
+    "aswdir_s",
+    "aswdifd_s",
+    "clct",
+    "t_2m",
+    "u_10m",
+    "v_10m"
+  ],
+  "pv_time_file": "pv_time.npy",
+  "era5_utc_time_file": "era5_utc_time.npy",
+  "lat_file": "lat.npy",
+  "lon_file": "lon.npy",
+  "note": "ERA5 radiation variables are interval-mean W/m2 converted from hourly accumulations before this memmap step."
+}

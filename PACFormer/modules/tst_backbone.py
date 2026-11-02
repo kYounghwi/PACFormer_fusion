@@ -238,6 +238,8 @@ class TSTiEncoder(nn.Module):  # i means channel-independent
             rope_base_time=kwargs.get("rope_base_time", 10000),
             rope_base_space=kwargs.get("rope_base_space", 10000),
             q_event_mode=kwargs.get("q_event_mode", "event"),
+            sites_per_group=kwargs.get("sites_per_group", 0),
+            diversity_weight=kwargs.get("diversity_weight", 0.9),
         )
 
     def forward(self, x) -> Tensor:
@@ -290,6 +292,8 @@ class TSTEncoder(nn.Module):
         rope_base_time: int = 10000,
         rope_base_space: int = 10000,
         q_event_mode: str = "event",
+        sites_per_group: int = 0,
+        diversity_weight: float = 0.9,
     ):
         super().__init__()
 
@@ -316,6 +320,8 @@ class TSTEncoder(nn.Module):
                     rope_base_time=rope_base_time,
                     rope_base_space=rope_base_space,
                     q_event_mode=q_event_mode,
+                    sites_per_group=sites_per_group,
+                    diversity_weight=diversity_weight,
                 )
                 for i in range(n_layers)
             ]
@@ -369,6 +375,8 @@ class TSTEncoderLayer(nn.Module):
         rope_base_time: int = 10000,
         rope_base_space: int = 10000,
         q_event_mode: str = "event",
+        sites_per_group: int = 0,
+        diversity_weight: float = 0.9,
         norm="BatchNorm",
         attn_dropout=0,
         dropout=0.0,
@@ -400,6 +408,8 @@ class TSTEncoderLayer(nn.Module):
             rope_base_time=rope_base_time,
             rope_base_space=rope_base_space,
             q_event_mode=q_event_mode,
+            sites_per_group=sites_per_group,
+            diversity_weight=diversity_weight,
         )
 
         if "batch" in norm.lower():
@@ -596,6 +606,8 @@ class _MultiheadAttention(nn.Module):
         rope_base_time: int = 10000,
         rope_base_space: int = 10000,
         q_event_mode: str = "event",
+        sites_per_group: int = 0,
+        diversity_weight: float = 0.9,
     ):
         """Multi Head Attention Layer
         Input shape:
@@ -628,6 +640,12 @@ class _MultiheadAttention(nn.Module):
 
         self.n_vars = c_in
         self.G = num_groups
+        self.sites_per_group = int(sites_per_group)
+        self.diversity_weight = float(diversity_weight)
+        if self.sites_per_group < 0:
+            raise ValueError("sites_per_group must be non-negative.")
+        if not 0.0 <= self.diversity_weight <= 1.0:
+            raise ValueError("diversity_weight must be in [0, 1].")
 
         self.pre_norm_attn = nn.LayerNorm(d_model)
 
@@ -804,7 +822,12 @@ class _MultiheadAttention(nn.Module):
         similarity = similarity / descriptor.size(-1) ** 0.5
 
         membership = torch.softmax(similarity / 0.5, dim=1)
-        top_sites = min(int(math.sqrt(self.G)), membership.size(1))
+        requested_sites = (
+            self.sites_per_group
+            if self.sites_per_group > 0
+            else max(1, int(math.sqrt(self.G)))
+        )
+        top_sites = min(requested_sites, membership.size(1))
         values, indices = torch.topk(membership, k=top_sites, dim=1)
         sparse_membership = torch.zeros_like(membership)
         sparse_membership.scatter_(1, indices, values)
@@ -812,7 +835,10 @@ class _MultiheadAttention(nn.Module):
 
         candidate_groups = torch.einsum("bng,bnpe->bgpe", membership, key)
         representative_indices = select_repr_groups(
-            similarity, membership, k=self.G, lam=0.1
+            similarity,
+            membership,
+            k=self.G,
+            lam=1.0 - self.diversity_weight,
         )
         gather_index = representative_indices[:, :, None, None].expand(
             batch_size, self.G, num_patches, d_model
@@ -857,6 +883,9 @@ class _MultiheadAttention(nn.Module):
         valid_transition = down_flat[:, :, None] & down_flat[:, None, :]
         score = score.masked_fill(~valid_transition, float("-inf"))
 
+        # Strict mask semantics: entries rejected by any of the causal,
+        # lead-lag, or downward-transition masks remain -inf through ReLU and
+        # therefore receive exactly zero softmax probability.
         valid_score = torch.isfinite(score)
         score = torch.relu(score).masked_fill(~valid_score, float("-inf"))
         top_links = min(int(self.G * 1.5), score.size(-1))

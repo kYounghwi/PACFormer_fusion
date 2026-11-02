@@ -1,11 +1,32 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .attention import AttentionLayer, FullAttention
 from .embedding import InvertedDataEmbedding
 from .nwp_branch import NWPBranchPanguTime3D
 from .transformer import Decoder, DecoderLayer, Encoder, EncoderLayer
 from .tst_backbone import PatchTST_backbone
+
+
+class SwiGLUResidualFusion(nn.Module):
+    """Nonlinear residual fusion with an identity path through the NWP token."""
+
+    def __init__(self, d_model, hidden_size, dropout):
+        super().__init__()
+        self.in_proj = nn.Linear(2 * d_model, 2 * hidden_size)
+        self.dropout = nn.Dropout(dropout)
+        self.out_proj = nn.Linear(hidden_size, d_model)
+        self.norm = nn.LayerNorm(d_model)
+        nn.init.normal_(self.out_proj.weight, mean=0.0, std=1e-3)
+        nn.init.zeros_(self.out_proj.bias)
+
+    def forward(self, nwp_token, correction):
+        value, gate = self.in_proj(
+            torch.cat([nwp_token, correction], dim=-1)
+        ).chunk(2, dim=-1)
+        delta = self.out_proj(self.dropout(value * F.silu(gate)))
+        return self.norm(nwp_token + delta)
 
 
 class Model(nn.Module):
@@ -81,6 +102,8 @@ class Model(nn.Module):
             verbose=False,
             stations_csv_path=configs.stations_csv_path,
             q_event_mode=getattr(configs, "q_event_mode", "event"),
+            sites_per_group=getattr(configs, "sites_per_group", 0),
+            diversity_weight=getattr(configs, "diversity_weight", 0.9),
             **kwargs,
         )
 
@@ -113,10 +136,21 @@ class Model(nn.Module):
             stats_std=getattr(configs, "nwp_std", None),
             pooling=configs.pooling,
         )
-        self.out_nwp = nn.Linear(configs.d_model, configs.pred_len)
-        self.out_pv_corr = nn.Linear(configs.d_model, configs.pred_len)
-        alpha = torch.linspace(1.0, 0.2, configs.pred_len).view(1, configs.pred_len, 1)
-        self.register_buffer("alpha", alpha)
+        self.fusion_mode = configs.fusion_mode
+        if self.fusion_mode == "decay":
+            self.out_nwp = nn.Linear(configs.d_model, configs.pred_len)
+            self.out_pv_corr = nn.Linear(configs.d_model, configs.pred_len)
+            alpha = torch.linspace(1.0, 0.2, configs.pred_len).view(
+                1, configs.pred_len, 1
+            )
+            self.register_buffer("alpha", alpha)
+        elif self.fusion_mode == "swiglu":
+            self.refinement_fusion = SwiGLUResidualFusion(
+                configs.d_model, configs.fusion_d_ff, configs.dropout
+            )
+            self.out_fused = nn.Linear(configs.d_model, configs.pred_len)
+        else:
+            raise ValueError("fusion_mode must be 'decay' or 'swiglu'.")
 
     @staticmethod
     def _alignment(d_model):
@@ -173,7 +207,6 @@ class Model(nn.Module):
         nwp_context = self.post_nwp(self.nwp_branch(nwp_field))
         pv_context = self.post_fused(pv_context)
 
-        nwp_base = self.out_nwp(nwp_context).permute(0, 2, 1)
         joint_context = torch.cat([nwp_context, pv_context], dim=1)
         refined = self.decoder2(joint_context, joint_context)
         refined_nwp = refined[:, :num_sites]
@@ -181,8 +214,13 @@ class Model(nn.Module):
 
         gate = self.gate2(torch.cat([refined_nwp, refined_pv], dim=-1))
         correction_token = gate * (refined_pv - refined_nwp)
-        pv_correction = self.out_pv_corr(correction_token).permute(0, 2, 1)
-        return nwp_base + self.alpha * pv_correction
+        if self.fusion_mode == "decay":
+            nwp_base = self.out_nwp(nwp_context).permute(0, 2, 1)
+            pv_correction = self.out_pv_corr(correction_token).permute(0, 2, 1)
+            return nwp_base + self.alpha * pv_correction
+
+        fused_token = self.refinement_fusion(refined_nwp, correction_token)
+        return self.out_fused(fused_token).permute(0, 2, 1)
 
     def forecast(self, x_enc, x_mark_enc, nwp_y):
         pv_context = self._encode_pv(x_enc, x_mark_enc)

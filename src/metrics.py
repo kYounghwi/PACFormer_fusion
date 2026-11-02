@@ -1,89 +1,91 @@
 import numpy as np
 
 
-def mae(prediction, target):
-    return float(np.mean(np.abs(prediction - target)))
+class CapacityMetricAccumulator:
+    """Stream the four capacity-normalized metrics used in the paper.
 
+    Site-level metrics first normalize each site's physical-unit error by its
+    installed capacity and then give every evaluated site equal weight.
+    Regional-total metrics first aggregate generation over all valid sites at
+    each target timestamp and normalize that aggregate error by the matching
+    sum of installed capacities.
+    """
 
-def mse(prediction, target):
-    return float(np.mean(np.square(prediction - target)))
+    def __init__(self, capacity):
+        self.capacity = np.asarray(capacity, dtype=np.float64)
+        if self.capacity.ndim != 1:
+            raise ValueError("capacity must be a one-dimensional site vector.")
+        if not np.isfinite(self.capacity).all() or not (self.capacity > 0).all():
+            raise ValueError("Every site must have a finite positive capacity.")
 
-
-def rmse(prediction, target):
-    return float(np.sqrt(mse(prediction, target)))
-
-
-def metric(prediction, target):
-    return {
-        "mae": mae(prediction, target),
-        "mse": mse(prediction, target),
-        "rmse": rmse(prediction, target),
-    }
-
-
-class SiteMetricAccumulator:
-    """Accumulate normalized-scale errors and report an equal-site average."""
-
-    def __init__(self, num_sites):
-        self.absolute_error_sum = np.zeros(num_sites, dtype=np.float64)
-        self.squared_error_sum = np.zeros(num_sites, dtype=np.float64)
-        self.valid_count = np.zeros(num_sites, dtype=np.int64)
-        self.total_count = np.zeros(num_sites, dtype=np.int64)
+        sites = len(self.capacity)
+        self.absolute_error_sum = np.zeros(sites, dtype=np.float64)
+        self.squared_error_sum = np.zeros(sites, dtype=np.float64)
+        self.valid_count = np.zeros(sites, dtype=np.int64)
+        self.regional_ratio_absolute_sum = 0.0
+        self.regional_ratio_squared_sum = 0.0
+        self.regional_count = 0
 
     def update(self, prediction, target, valid_mask):
         if prediction.shape != target.shape or target.shape != valid_mask.shape:
             raise ValueError(
                 "prediction, target, and valid_mask must have equal shapes."
             )
-        if prediction.ndim != 3:
-            raise ValueError("Metric inputs must have shape [batch, horizon, site].")
+        if prediction.ndim != 3 or prediction.shape[-1] != len(self.capacity):
+            raise ValueError(
+                "Metric inputs must have shape [batch, horizon, site]."
+            )
 
-        error = prediction - target
-        axes = (0, 1)
-        self.absolute_error_sum += np.where(valid_mask, np.abs(error), 0.0).sum(
-            axis=axes, dtype=np.float64
+        valid = (
+            np.asarray(valid_mask, dtype=bool)
+            & np.isfinite(prediction)
+            & np.isfinite(target)
         )
-        self.squared_error_sum += np.where(valid_mask, np.square(error), 0.0).sum(
-            axis=axes, dtype=np.float64
+        error = np.where(valid, prediction - target, 0.0)
+        self.absolute_error_sum += np.abs(error).sum(axis=(0, 1), dtype=np.float64)
+        self.squared_error_sum += np.square(error).sum(
+            axis=(0, 1), dtype=np.float64
         )
-        self.valid_count += valid_mask.sum(axis=axes, dtype=np.int64)
-        self.total_count += np.prod(valid_mask.shape[:2], dtype=np.int64)
+        self.valid_count += valid.sum(axis=(0, 1), dtype=np.int64)
+
+        # Regional totals use the same point-wise daylight mask. The
+        # denominator contains exactly the capacities of contributing sites.
+        active = valid.any(axis=-1)
+        if np.any(active):
+            prediction_total = np.where(valid, prediction, 0.0).sum(axis=-1)
+            target_total = np.where(valid, target, 0.0).sum(axis=-1)
+            capacity_total = np.where(
+                valid, self.capacity[None, None, :], 0.0
+            ).sum(axis=-1)
+            ratio = (
+                (prediction_total[active] - target_total[active])
+                / capacity_total[active]
+            )
+            self.regional_ratio_absolute_sum += np.abs(ratio).sum(dtype=np.float64)
+            self.regional_ratio_squared_sum += np.square(ratio).sum(dtype=np.float64)
+            self.regional_count += int(active.sum())
 
     def compute(self):
-        valid_sites = self.valid_count > 0
-        if not np.any(valid_sites):
-            raise ValueError("No site contains a valid target value.")
+        evaluated = self.valid_count > 0
+        if not np.any(evaluated):
+            raise ValueError("No site contains a valid daylight target value.")
+        if self.regional_count == 0:
+            raise ValueError("No regional timestamp contains a valid target value.")
 
-        site_mae = np.full(self.valid_count.shape, np.nan, dtype=np.float64)
-        site_mse = np.full(self.valid_count.shape, np.nan, dtype=np.float64)
-        site_mae[valid_sites] = (
-            self.absolute_error_sum[valid_sites] / self.valid_count[valid_sites]
+        site_mae = self.absolute_error_sum[evaluated] / self.valid_count[evaluated]
+        site_rmse = np.sqrt(
+            self.squared_error_sum[evaluated] / self.valid_count[evaluated]
         )
-        site_mse[valid_sites] = (
-            self.squared_error_sum[valid_sites] / self.valid_count[valid_sites]
-        )
-        site_rmse = np.sqrt(site_mse)
-        site_valid_fraction = np.divide(
-            self.valid_count,
-            self.total_count,
-            out=np.zeros_like(site_mae),
-            where=self.total_count > 0,
-        )
+        capacity = self.capacity[evaluated]
 
-        metrics = {
-            "mae": float(np.mean(site_mae[valid_sites])),
-            "mse": float(np.mean(site_mse[valid_sites])),
-            "rmse": float(np.mean(site_rmse[valid_sites])),
-            "valid_count": int(self.valid_count.sum()),
-            "valid_fraction": float(self.valid_count.sum() / self.total_count.sum()),
-            "valid_sites": int(valid_sites.sum()),
-            "num_sites": int(valid_sites.size),
+        return {
+            "nMAE_percent": float(100.0 * np.mean(site_mae / capacity)),
+            "nRMSE_percent": float(100.0 * np.mean(site_rmse / capacity)),
+            "regional_total_nMAE_percent": float(
+                100.0 * self.regional_ratio_absolute_sum / self.regional_count
+            ),
+            "regional_total_nRMSE_percent": float(
+                100.0
+                * np.sqrt(self.regional_ratio_squared_sum / self.regional_count)
+            ),
         }
-        site_metrics = {
-            "mae": site_mae,
-            "mse": site_mse,
-            "rmse": site_rmse,
-            "valid_count": self.valid_count.copy(),
-            "valid_fraction": site_valid_fraction,
-        }
-        return metrics, site_metrics

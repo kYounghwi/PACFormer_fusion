@@ -47,10 +47,11 @@ def read_pv_csv(path, date_col="date", pv_columns=None):
     if missing:
         raise ValueError(f"PV columns not found: {missing}")
 
+    # Keep missing values aligned with their original timestamps. Sample
+    # construction excludes every window containing a missing PV value. This
+    # avoids both time-axis compression and the future leakage caused by
+    # backward filling at the beginning of a series.
     values = frame[columns].apply(pd.to_numeric, errors="coerce")
-    values = values.ffill().bfill()
-    if values.isna().any().any():
-        raise ValueError("PV CSV contains values that cannot be imputed.")
 
     dates = pd.DatetimeIndex(frame[date_col])
     return dates, values.to_numpy(dtype=np.float64), columns
@@ -110,13 +111,14 @@ def read_nwp_csv(
 
 
 class NWPMemmapStore:
-    """Lazy future-NWP windows backed by a time-major memmap."""
+    """Lazy historical+future NWP windows from a valid-time memmap (ERA5)."""
 
     def __init__(
         self,
         directory,
         dates,
-        time_len,
+        future_len,
+        history_len=0,
         time_shift=0,
         scale=True,
         scale_eps=1e-6,
@@ -145,7 +147,9 @@ class NWPMemmapStore:
         self.index_by_time = {
             pd.Timestamp(timestamp): index for index, timestamp in enumerate(self.dates)
         }
-        self.time_len = int(time_len)
+        self.future_len = int(future_len)
+        self.history_len = int(history_len)
+        self.time_len = self.history_len + self.future_len
         self.time_shift = int(time_shift)
         self.scale_eps = float(scale_eps)
         self.variables = (
@@ -210,8 +214,9 @@ class NWPMemmapStore:
         index = self.index_by_time.get(pd.Timestamp(origin))
         if index is None:
             return None
-        start = index + self.time_shift
-        end = start + self.time_len
+        forecast_index = index + self.time_shift
+        start = forecast_index - self.history_len
+        end = forecast_index + self.future_len
         if start < 0 or end > self.values.shape[0]:
             return None
         return start, end
@@ -228,6 +233,105 @@ class NWPMemmapStore:
         np.subtract(field, self.scaler.mean, out=field)
         np.divide(field, self.scaler.std + self.scale_eps, out=field)
         return np.transpose(field, (2, 1, 0, 3))
+
+
+class ICONForecastArchiveStore:
+    """Select the latest available ICON cycle at each hourly forecast origin.
+
+    ``fields`` maps initialization timestamps to complete forecast trajectories
+    with shape ``[H, W, lead, variable]``.  Future input is sliced from the
+    newest initialization not later than the requested forecast time; hence
+    hourly PV samples reuse a cycle until a newer cycle is issued.
+
+    Historical forecast assembly is intentionally an explicit hook.  Archives
+    differ in whether past valid times should come from analysis fields,
+    successive archived cycles, or another operational product.  The public
+    repository must not silently invent this policy or leak future information.
+    """
+
+    def __init__(
+        self,
+        fields,
+        future_len,
+        history_len=0,
+        time_shift=0,
+        scaler=None,
+        scale_eps=1e-6,
+    ):
+        if not fields:
+            raise ValueError("ICON forecast archive is empty.")
+        self.fields = {pd.Timestamp(key): value for key, value in fields.items()}
+        self.initializations = pd.DatetimeIndex(sorted(self.fields))
+        self._initialization_ns = self.initializations.asi8
+        first = next(iter(self.fields.values()))
+        self.future_len = int(future_len)
+        self.history_len = int(history_len)
+        self.time_len = self.history_len + self.future_len
+        self.time_shift = int(time_shift)
+        self.scale_eps = float(scale_eps)
+        channels = int(first.shape[-1])
+        self.scaler = scaler or StandardScaler(
+            mean=np.zeros(channels, dtype=np.float32),
+            std=np.ones(channels, dtype=np.float32),
+        )
+        self.shape = (first.shape[1], first.shape[0], self.time_len, channels)
+
+    def _latest_cycle(self, origin):
+        forecast_time = pd.Timestamp(origin) + pd.Timedelta(hours=self.time_shift)
+        position = int(np.searchsorted(self._initialization_ns, forecast_time.value, side="right") - 1)
+        if position < 0:
+            return None
+        initialization = self.initializations[position]
+        elapsed = (forecast_time - initialization) / pd.Timedelta(hours=1)
+        lead_start = int(elapsed)
+        if elapsed != lead_start or lead_start < 0:
+            return None
+        field = self.fields[pd.Timestamp(initialization)]
+        if lead_start + self.future_len > field.shape[2]:
+            return None
+        return forecast_time, field, lead_start
+
+    def load_historical_nwp(self, forecast_time, history_len):
+        """Return raw ``[H,W,history,V]`` fields ending before forecast_time.
+
+        Implement this archive-specific policy before using historical ICON
+        input.  It is left blank deliberately: choosing analysis, previous
+        cycles, or hindsight valid-time values changes the experiment.
+        """
+
+        raise NotImplementedError(
+            "Historical ICON wrapping is archive-specific. Implement "
+            "ICONForecastArchiveStore.load_historical_nwp() or run with "
+            "--nwp_history_len 0."
+        )
+
+    def __contains__(self, origin):
+        return self._latest_cycle(origin) is not None
+
+    def __getitem__(self, origin):
+        selected = self._latest_cycle(origin)
+        if selected is None:
+            raise KeyError(f"No complete ICON forecast window is available for {origin}.")
+        forecast_time, field, lead_start = selected
+        future = np.asarray(
+            field[:, :, lead_start : lead_start + self.future_len, :],
+            dtype=np.float32,
+        )
+        if self.history_len:
+            history = np.asarray(
+                self.load_historical_nwp(forecast_time, self.history_len),
+                dtype=np.float32,
+            )
+            expected = (*future.shape[:2], self.history_len, future.shape[-1])
+            if history.shape != expected:
+                raise ValueError(
+                    f"Historical ICON hook returned {history.shape}; expected {expected}."
+                )
+            field = np.concatenate([history, future], axis=2)
+        else:
+            field = future
+        field = (field - self.scaler.mean) / (self.scaler.std + self.scale_eps)
+        return np.transpose(field.astype(np.float32), (1, 0, 2, 3))
 
 
 class PVNWPDataset(Dataset):

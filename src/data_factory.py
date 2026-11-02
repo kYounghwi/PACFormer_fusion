@@ -6,6 +6,7 @@ import pandas as pd
 from torch.utils.data import DataLoader
 
 from .data_loader import (
+    ICONForecastArchiveStore,
     NWPMemmapStore,
     PVNWPDataset,
     StandardScaler,
@@ -26,6 +27,8 @@ class DataBundle:
     nwp_scaler: StandardScaler
     site_columns: list
     nwp_variables: list
+    site_capacity: np.ndarray
+    capacity_column: str
 
 
 def _resolve(root_path, file_path):
@@ -59,7 +62,37 @@ def _validate_station_csv(path, site_columns):
             )
 
 
-def _split_sample_starts(dates, nwp_fields, seq_len, pred_len, train_ratio, val_ratio):
+def _load_site_capacity(path, site_columns):
+    """Load installed capacity without a data-derived peak fallback."""
+    frame = pd.read_csv(path)
+    lower = {str(column).lower(): column for column in frame.columns}
+    candidates = (
+        "capacity",
+        "capacity_kw",
+        "installed_capacity",
+        "installed_capacity_kw",
+        "kwp",
+    )
+    column = next((lower[name] for name in candidates if name in lower), None)
+    if column is None:
+        raise ValueError(
+            "Station CSV must contain installed capacity in one of: "
+            "capacity, capacity_kw, installed_capacity, "
+            "installed_capacity_kw, kWp."
+        )
+    capacity = pd.to_numeric(frame[column], errors="coerce").to_numpy(dtype=np.float64)
+    if len(capacity) != len(site_columns):
+        raise ValueError("Capacity row count must match the PV site count.")
+    invalid = ~np.isfinite(capacity) | (capacity <= 0)
+    if np.any(invalid):
+        bad = np.flatnonzero(invalid)[:10].tolist()
+        raise ValueError(f"Invalid installed capacity at station rows {bad}.")
+    return capacity, str(column)
+
+
+def _split_sample_starts(
+    dates, pv_values, nwp_fields, seq_len, pred_len, train_ratio, val_ratio
+):
     total = len(dates)
     train_end = int(total * train_ratio)
     test_size = int(total * (1.0 - train_ratio - val_ratio))
@@ -84,7 +117,8 @@ def _split_sample_starts(dates, nwp_fields, seq_len, pred_len, train_ratio, val_
         for target_start in range(target_first, target_limit - pred_len + 1):
             start = target_start - seq_len
             origin = pd.Timestamp(dates[target_start])
-            if origin in nwp_fields:
+            pv_window = pv_values[start : target_start + pred_len]
+            if np.isfinite(pv_window).all() and origin in nwp_fields:
                 candidates.append(start)
         if not candidates:
             raise ValueError(f"No valid {split} samples have matching NWP origins.")
@@ -109,7 +143,27 @@ def _scale_nwp_fields(fields, train_origins, enabled=True):
     return scaled, scaler
 
 
+def _archive_scaler(fields, train_cutoff, enabled=True):
+    variables = next(iter(fields.values())).shape[-1]
+    if not enabled:
+        return StandardScaler(
+            mean=np.zeros(variables, dtype=np.float32),
+            std=np.ones(variables, dtype=np.float32),
+        )
+    issued_in_train = [
+        field for initialization, field in fields.items()
+        if pd.Timestamp(initialization) <= pd.Timestamp(train_cutoff)
+    ]
+    if not issued_in_train:
+        raise ValueError("No ICON initialization is available in the training period.")
+    values = np.concatenate(
+        [field.reshape(-1, variables) for field in issued_in_train], axis=0
+    )
+    return StandardScaler.fit(values, axis=0)
+
+
 def build_data_bundle(args):
+
     pv_path = _resolve(args.root_path, args.pv_csv)
     station_path = _resolve(args.root_path, args.stations_csv_path)
 
@@ -118,18 +172,23 @@ def build_data_bundle(args):
         date_col=args.date_col,
         pv_columns=_parse_columns(args.pv_columns),
     )
+
     if not 0 < args.train_ratio < 1 or not 0 < args.val_ratio < 1:
         raise ValueError("train_ratio and val_ratio must be between zero and one.")
     if args.train_ratio + args.val_ratio >= 1:
         raise ValueError("train_ratio + val_ratio must be smaller than one.")
+
     train_end = int(len(dates) * args.train_ratio)
+    history_len = int(args.nwp_history_len)
+    future_len = int(args.nwp_future_len)
 
     if args.nwp_backend == "memmap":
         memmap_dir = _resolve(args.root_path, args.nwp_memmap_dir)
         nwp_fields = NWPMemmapStore(
             memmap_dir,
             dates,
-            args.pred_len,
+            future_len,
+            history_len=history_len,
             time_shift=args.nwp_time_shift,
             scale=args.scale_nwp,
             train_time_end=train_end,
@@ -139,7 +198,34 @@ def build_data_bundle(args):
         )
         nwp_variables = nwp_fields.variables
         nwp_shape = nwp_fields.shape
+    elif args.nwp_backend == "icon_archive":
+        nwp_path = _resolve(args.root_path, args.nwp_csv)
+        archive_fields, nwp_variables, _archive_shape = read_nwp_csv(
+            nwp_path,
+            origin_col=args.nwp_origin_col,
+            lead_col=args.nwp_lead_col,
+            grid_y_col=args.nwp_grid_y_col,
+            grid_x_col=args.nwp_grid_x_col,
+            variable_columns=_parse_columns(args.nwp_variables),
+        )
+        nwp_scaler = _archive_scaler(
+            archive_fields, dates[max(0, train_end - 1)], args.scale_nwp
+        )
+        nwp_fields = ICONForecastArchiveStore(
+            archive_fields,
+            future_len=future_len,
+            history_len=history_len,
+            time_shift=args.nwp_time_shift,
+            scaler=nwp_scaler,
+        )
+        nwp_shape = nwp_fields.shape
     else:
+        if history_len:
+            raise ValueError(
+                "Legacy exact-origin CSV fields do not define historical NWP. "
+                "Use --nwp_backend memmap, implement the ICON history hook, or "
+                "set --nwp_history_len 0."
+            )
         nwp_path = _resolve(args.root_path, args.nwp_csv)
         nwp_fields, nwp_variables, nwp_shape = read_nwp_csv(
             nwp_path,
@@ -150,9 +236,12 @@ def build_data_bundle(args):
             variable_columns=_parse_columns(args.nwp_variables),
         )
     _validate_station_csv(station_path, site_columns)
+    site_capacity, capacity_column = _load_site_capacity(station_path, site_columns)
 
     if args.num_groups > len(site_columns):
         raise ValueError("num_groups cannot exceed the number of PV sites.")
+    if args.sites_per_group > len(site_columns):
+        raise ValueError("sites_per_group cannot exceed the number of PV sites.")
     if args.d_model % args.n_heads != 0:
         raise ValueError("d_model must be divisible by n_heads.")
     if args.patch_len > args.seq_len:
@@ -167,6 +256,7 @@ def build_data_bundle(args):
 
     starts, train_end = _split_sample_starts(
         dates,
+        pv_values,
         nwp_fields,
         args.seq_len,
         args.pred_len,
@@ -183,7 +273,7 @@ def build_data_bundle(args):
             std=np.ones(len(site_columns), dtype=np.float32),
         )
 
-    if args.nwp_backend == "memmap":
+    if args.nwp_backend in {"memmap", "icon_archive"}:
         nwp_scaler = nwp_fields.scaler
     else:
         train_origins = [
@@ -233,4 +323,6 @@ def build_data_bundle(args):
         nwp_scaler=nwp_scaler,
         site_columns=site_columns,
         nwp_variables=nwp_variables,
+        site_capacity=site_capacity,
+        capacity_column=capacity_column,
     )
